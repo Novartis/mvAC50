@@ -1,0 +1,15 @@
+Package: mvAC50
+Title: AC50 potencies from multivariate readouts like gene signatures
+Version: 1.0.0
+Authors@R: c(person("Steffen", "Renner", email = "steffen.renner@novartis.com", role = c("aut", "cre")),
+  person("Hanspeter", "Gubler", email = "	hanspeter.gubler@novartis.com", role = c("aut")))
+Description: Library for calculating AC50s (general term for IC50s or EC50s) from multivariate readouts, e.g. gene signatures or high content screening fingerprints.
+Depends: R (>= 3.4.4)
+License: Apache License, Version 2.0 
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 6.1.1
+Suggests: knitr, rmarkdown
+VignetteBuilder: knitr
+
+

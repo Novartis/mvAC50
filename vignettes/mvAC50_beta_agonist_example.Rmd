@@ -1,0 +1,263 @@
+---
+title: "mvAC50 beta agonists example"
+author: "Steffen Renner"
+date: "May 17th 2019"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{mvAC50 beta agonists example}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Introduction
+
+This dataset was published together with the mvAC50 package in the paper  *"Gene-signatures predict biologically relevant dose-response potencies in phenotypic assays"* (yet to be published) and contains gene expression changes measured for 21 beta agonists, and three control compounds at 8 concentrations in THP1 cells. For comparison, the data contains also univariate cAMP activity in THP1 cells, measuring the activitiy of the pathway upstream of the gene expression. The objective of the publication was to benchmark conceptually diverse gene signature EC50 methods in comparison to cAMP EC50s.
+
+
+The two datasets in the mvAC package relevant for the beta agonists example are: 
+
+name  | description
+------------- | -------------------------------------------
+thp1_gene_rscores  | change in gene expression induced by beta agonists for two sets of 8-gene signatures 
+thp1_cAMP  | cAMP dose response data for beta agonists
+
+All datasets were measured in THP1 cells. Gene expression was measured after 4h , cAMp was measured after 20 min.
+
+
+### Prepare dataset
+
+The gene expression dataset is stored in a long format with every measurement for each gene in a separate line. For the multivariate signature scores function a wide format is required as input. 
+
+The gene expression for the 16 genes was measured in two separate expreriments, each measuring 8 genes in one well. Therefore the summary scores were calculated separately for both experiments. As input we use the change in gene expression normalized to the housekeeper (TBP). Therefore TBP is excluded from the analysis, as it is set to zero by the normalization.
+
+Load libraries.
+
+```{r message=FALSE, warning=FALSE}
+  library(mvAC50)
+  library(tidyverse)
+```
+
+
+
+```{r fig.height=4, fig.width=8, fig.cap='Figure 1. Example of raw data. Red is the active control gene signature of Isoproterenol, blue are the changes in gene expression at different concentrations of Metaproterenol.'}
+thp1_gene_rscores %>% filter(readout_set=="signature01" &  assay_plate=="plate01" & 
+  (well_type=="AC" | (cpd_name=="Metaproterenol" & conc_um %in% c(10,0.1, 0.001)) )) %>%
+  mutate(id=paste(well_type, cpd_name, conc_um, sep="_")) %>%
+  group_by(id, gene) %>% summarize(rscore_HKnorm=median(rscore_HKnorm)) %>%
+  ggplot(aes(x=gene, y=rscore_HKnorm, group=id, colour=id)) +
+  theme_bw()+
+  geom_line(size=1)  + 
+  scale_color_manual(values=c("red","lightskyblue","royalblue1","darkblue")) +
+  coord_cartesian(ylim=c(-10,50)) +
+  geom_hline(yintercept=c(-3,3), linetype="dashed", colour="orange", size=.5) +
+  geom_hline(yintercept=c(0), colour="grey", size=.5) +
+  labs(x="gene", y="rscore changed gene expression", colour="sample") +
+  theme(text = element_text(size = 16)) +
+  theme(axis.title.x = element_text(size=16),axis.text.x  = element_text(angle=90, vjust=0.5, size=10)) +
+  theme(axis.title.y = element_text(size=16),axis.text.y  = element_text(vjust=0.5, size=16)) 
+  
+```
+
+
+
+Spread gene expression data to wide format to for the calculation of the multivariate signature scores by the `signature_scores` function.
+
+
+```{r}
+thp1_sig1 <- thp1_gene_rscores %>% filter(gene!="TBP" & readout_set=="signature01") %>% 
+  dplyr::select(-rscore)%>%                          
+  spread(gene, rscore_HKnorm)
+
+thp1_sig2 <- thp1_gene_rscores %>% filter(gene!="TBP" & readout_set=="signature02") %>% 
+  dplyr::select(-rscore)%>%                          
+  spread(gene, rscore_HKnorm)
+```
+
+
+### Calculate gene signature summary scores
+
+Prepare lists with names of metadata columns, data columns, etc, for the ```signature_scores``` function.
+
+
+```{r}
+# metadata columns in gene expression data.frames
+all_metadata <- c("row","col","assay_plate","well_type","conc_um","inchi_key","smiles","biol_replicate","cpd_name","readout_set")
+
+# subset of metadata columns to keep in multivariate scores output
+keepvars <- c("cpd_name","conc_um","readout_set","well_type", "biol_replicate")
+
+# gene expression columns in the data
+readouts_s1 <- setdiff(colnames(thp1_sig1),all_metadata)
+readouts_s2 <- setdiff(colnames(thp1_sig2),all_metadata)
+```
+
+List of signature summary scores to calculate. The list below containts all available scoring methods for the sake of a full benchmark.
+
+```{r}
+mv_methods <- c("maha_AC","maha_NC","euc_AC","euc_NC","cor_p_AC","cor_s_AC","dot_p_AC","cos_AC","vec_norm","scalar_projection_AC","cos_weight_AC","num_readouts_changed"  )
+```
+
+
+Calculate signature scores using the ```signature_scores``` function. From each signature the strongest responding individual genes are also kept for the calculation of single gene AC50s for comparison. These genes were manually selected and are specified in the  ```keep_readouts=c(...)``` option. For the calculation, the column well_type specifies samples "SA", and the two controls "AC" (active controls), and "NC" (neutral controls). The controls are used by some of the signature score methods. The grouping in the command below is done by plate to calculate signature scores for wells only based on controls of the same plate as the samples.
+
+```{r}
+
+thp1_sig1_scores <- thp1_sig1  %>% group_by(assay_plate) %>% 
+  do(signature_scores(., readouts=readouts_s1, keep_cols=keepvars, well_type = "well_type",
+                      mv_methods=mv_methods, threshold=3, keep_readouts=c("CD55","DOCK4","NR4A1")))
+
+thp1_sig2_scores <- thp1_sig2  %>% group_by(assay_plate) %>% 
+  do(signature_scores(., readouts=readouts_s2, keep_cols=keepvars, well_type = "well_type",
+                      mv_methods=mv_methods, threshold=3, keep_readouts=c("PDE4B","SGK1","THBS1","TOB1","VEGFA")))
+
+thp1_sig_scores <- rbind(thp1_sig1_scores, thp1_sig2_scores)
+head(thp1_sig_scores)
+
+```
+
+
+### Fit EC50s from univariate and multivariate readouts
+
+Fit AC50s using the ```fit_AC50``` function. Only samples data is used for fitting (well_type == "SA"), as controls don't have dose dependent data. Readouts for fitting were normalized to the active control by the ```signature_scores``` function already (100% = signal of the active control), which is the appropriate input column for the AC50 fitting.
+
+For constant fits, no AC50 values are reported by the ```fit_AC50``` function. To facilitate the comparison to the univariate cAMP EC50s, AC50s of constant fits were set to one log unit below the lowest screening concentration for inactive compounds and one log unit above the highest screening concentration for compounds active at all tested concentrations. Similarly for inactive compounds with parametric or non-parametric fits with ainf < 50%, AC50s were also set to one log unit above the highest screening concentration.
+
+
+```{r, message=FALSE, warning=FALSE}
+
+thp1_sig_ac50s <- thp1_sig_scores %>% filter(well_type=="SA") %>% group_by(cpd_name, biol_replicate, readout_name, readout_type, readout_class, readout_set) %>%
+  do(fit_AC50(., conc_um="conc_um", readout_value_pctAC="readout_value_pctAC"))
+
+# replace missing AC50s from constant fits etc with values 1 log unit above/below range of tested concentrations
+thp1_sig_ac50s <- thp1_sig_ac50s %>% mutate(
+  # if constant fit set AC50 to either 1 log unit above or below max tested concentration
+  ac50=ifelse(fit_type=="constant" & amax > 50, 1e-06, ifelse(fit_type=="constant" & amax <= 50, 1000, ac50)),
+  # if ainf < 50% activity, also set AC50 to one log unit above highest tested dose
+  ac50=ifelse(fit_type %in% c("param","nonparam") & ainf < 50, 1000, ac50)
+)
+
+```
+
+
+Process the raw univariate cAMP dose response data in the same way as above for a consistent comparison to gene and gene signature EC50s. 
+
+```{r, message=FALSE, warning=FALSE}
+
+thp1_cAMP_ac50s <- thp1_cAMP %>% filter(well_type=="SA") %>% group_by(cpd_name, biol_replicate, readout_name, readout_set) %>%
+  do(fit_AC50(., conc_um="conc_um", readout_value_pctAC="readout_value_pctAC"))
+
+# adjust ac50s like above
+thp1_cAMP_ac50s <- thp1_cAMP_ac50s %>% mutate(
+  # if constant fit set AC50 to either 1 log unit above or below max tested concentration
+  ac50=ifelse(fit_type=="constant" & amax > 50, 1e-06, ifelse(fit_type=="constant" & amax <= 50, 1000, ac50)),
+  # if ainf < 50% activity, also set AC50 to one log unit above highest tested dose
+  ac50=ifelse(fit_type %in% c("param","nonparam") & ainf < 50, 1000, ac50)
+) %>% rename(ac50_cAMP = ac50)
+
+# join
+thp1_sig_ac50s <- inner_join(thp1_sig_ac50s, thp1_cAMP_ac50s[,c("cpd_name","biol_replicate","ac50_cAMP")], by=c("cpd_name","biol_replicate"))
+
+```
+
+
+
+```{r, echo=FALSE}
+thp1_sig_ac50s$readout_name <- factor(thp1_sig_ac50s$readout_name, levels=c(
+  "cor_p_AC","cor_s_AC","cos_AC","cos_weight_AC","dot_p_AC","scalar_projection_AC","vec_norm",
+  "euc_NC","maha_NC","num_readouts_changed","euc_AC","maha_AC",	
+  #"CCL22","CD55","DKK2","DOCK4","DUSP4","IRF8","NR4A1","NR4A3","PDE4B","PPARGC1B","SGK1","TBP","THBS1","TOB1","VEGFA"   
+  "CD55","DOCK4","NR4A1","PDE4B","SGK1","THBS1","TOB1","VEGFA"
+))
+
+
+
+thp1_sig_ac50s$readout_class <- factor(thp1_sig_ac50s$readout_class, levels=c(
+  "direction","directionMagnitude","magnitude","AC_similarity","univariate"
+))
+```
+
+
+
+
+### Gene and gene signature EC50s compared to cAMP EC50s for seleted examples
+
+```{r fig.height=4, fig.width=8, fig.cap='Figure 2. Comparison of gene and gene signature EC50s with cAMP EC50s for selected examples'}
+ggplot(thp1_sig_ac50s %>% filter( (readout_name == "THBS1" & biol_replicate == 2) | (readout_name %in% c("cor_p_AC","cos_weight_AC","scalar_projection_AC","vec_norm","NR4A1") & biol_replicate == 2 & readout_set == "signature01")), aes(x=ac50_cAMP, y=ac50, colour=readout_class)) +
+  theme_bw()+
+  geom_point(size=3, alpha=.8) +
+  scale_x_log10() + scale_y_log10() +
+  facet_wrap(~readout_name) +
+  geom_abline(slope=1, color="red") +
+  geom_abline(slope=1, intercept=1, linetype="dashed",color="red") +
+  geom_abline(slope=1, intercept=-1, linetype="dashed",color="red") +
+  scale_color_manual(values=c("#FF9900", "chartreuse4","#3366CC","darkorchid1","darkgrey"))+
+  labs(x="EC50 cAMP [uM]", y="EC50 gene [uM]")+
+  theme(text = element_text(size=14 )) +
+  theme(axis.title.x = element_text(size=14),axis.text.x  = element_text(angle=0, vjust=0.5, size=12)) +
+  theme(axis.title.y = element_text(size=14),axis.text.y  = element_text(vjust=0.5, size=12)) 
+  
+```
+
+
+
+
+
+```{r fig.height=7, fig.width=10.5, fig.cap='Figure 3. Comparison of all gene and gene signature EC50s for all gene signatures and biological replicateds compared with cAMP EC50s.'}
+ggplot(thp1_sig_ac50s, aes(x=ac50_cAMP, y=ac50, colour=readout_class, shape=interaction(biol_replicate,readout_set))) +
+  theme_bw()+
+  geom_point(size=3, alpha=.8) +
+  scale_x_log10() + scale_y_log10() +
+  facet_wrap(~readout_name) +
+  geom_abline(slope=1, color="red") +
+  geom_abline(slope=1, intercept=1, linetype="dashed",color="red") +
+  geom_abline(slope=1, intercept=-1, linetype="dashed",color="red") +
+  scale_color_manual(values=c("#FF9900", "chartreuse4","#3366CC","darkorchid1","darkgrey"))+
+  scale_shape_manual(values=c(1,16,2,17))+
+  labs(x="EC50 cAMP [uM]", y="EC50 gene [uM]", shape="biol replicate.\nsignature")+
+  theme(text = element_text(size=12 )) +
+  theme(axis.title.x = element_text(size=12),axis.text.x  = element_text(angle=0, vjust=0.5, size=10)) +
+  theme(axis.title.y = element_text(size=12),axis.text.y  = element_text(vjust=0.5, size=10)) 
+```
+
+
+
+### Quantify correlation of gene and gene signature EC50s with cAMP EC50s
+
+Calculate the correlations to cAMP EC50s.
+```{r message=FALSE, warning=FALSE}
+thp1_sig_ac50s.cor <- thp1_sig_ac50s %>% group_by(readout_name, biol_replicate, readout_set, readout_class) %>% summarize(
+  num.datapoints=n(),
+  rss.ac50=sum((log10(ac50)-log10(ac50_cAMP))^2,na.rm = TRUE),
+  cor.pearson.ac50=cor(log10(ac50), log10(ac50_cAMP), use="pairwise.complete.obs"), 
+  cor.spearman.ac50=cor(log10(ac50), log10(ac50_cAMP), method="spearman", use="pairwise.complete.obs")
+)
+
+```
+
+
+
+
+```{r fig.cap='Figure 4. Correlation of cAMP EC50s with all gene and gene-signature EC50s', fig.height=6, fig.width=8, message=FALSE, warning=FALSE}
+ggplot(thp1_sig_ac50s.cor, aes(x=cor.pearson.ac50, y=readout_name, shape=interaction(biol_replicate,readout_set), colour=readout_class)) +
+  theme_bw()+
+  geom_vline(xintercept=c(-.5, .5), linetype="dashed", colour="grey", size=.5) +
+  geom_vline(xintercept=c(0), colour="grey", size=.5) +
+  geom_jitter(size=4, alpha=.8, stroke=1.5, height = .15) +
+  theme(text = element_text(size=16 )) +
+  coord_cartesian(xlim=c(-.5,1))+
+  scale_y_discrete(name="", limits = rev(levels(thp1_sig_ac50s.cor$readout_name))) +
+  scale_color_manual(values=c("#FF9900", "chartreuse4","#3366CC","darkorchid1","darkgrey"))+
+  scale_shape_manual(values=c(1,16,2,17))+
+  labs(x = "correlation to cAMP EC50", shape="biol replicate.\nsignature")+
+  theme(text = element_text(size=12 )) +
+  theme(axis.title.x = element_text(size=14),axis.text.x  = element_text(angle=0, vjust=0.5, size=12)) +
+  theme(axis.title.y = element_text(size=14),axis.text.y  = element_text(vjust=0.5, size=12)) 
+```
+
+
+

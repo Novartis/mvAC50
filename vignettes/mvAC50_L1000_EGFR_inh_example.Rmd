@@ -1,0 +1,217 @@
+---
+title: "mvAC50 L1000 EGFR inhibitor example"
+author: "Steffen Renner"
+date: "May 30th 2019"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{mvAC50 L1000 EGFR inh example}
+  %\VignetteEngine{knitr::rmarkdown}
+  \usepackage[utf8]{inputenc}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+### Introduction
+
+This dataset was used in our publication *"Gene-signatures predict biologically relevant dose-response potencies in phenotypic assays"* (yet to be published) for the validation of multivariate AC50 algorithms. Originally the L1000 large scale gene expression screening dataset was published by [Subramanian et al. 2017](https://www.ncbi.nlm.nih.gov/pubmed/29195078), and is downloadable from [GEO](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE70138). For our study a subset of the data containing EGFR inhibitors tested in MCF10A cells were used. Genes were filtered by a published EGFR signature from [Creighton et al. 2006](https://www.ncbi.nlm.nih.gov/pubmed/16585219) and a published TPX2 cell proliferation signature from [Farmer et al. 2009](https://www.ncbi.nlm.nih.gov/pubmed/19122658). In our publication on the mvAC50 package we looked also into all reported L1000 genes in addition to the more specific EGFR and TPX2 signatures, but to keep the size of the package small and as the data is publicly available, the dataset containing all genes is not contained in this package. 
+
+For comparison to the gene signature IC50s, publicly available cell growth inhibition potencies of the EGFR inhibitors in MCF10A cells were used from [Lincs](http://lincs.hms.harvard.edu/db/datasets/20252/results)).
+
+
+The three datasets in the mvAC package relevant for the L1000 EGFR example are: 
+
+name  | description
+------------- | -------------------------------------------
+lincs_egfr_sig  | change in gene expression induced by EGFR inhibitors for genes from an EGFR signature 
+lincs_tpx2_sig  | change in gene expression induced by EGFR inhibitors for genes from a TPX2 cell proliferation signature
+lincs_GR50s  | cell growth inhibition by EGFR inhibitors
+
+All datasets were measured in MCF10A cells. Gene expression was measured after 3h and 24h, GR50s were measured after 3 days.
+
+
+### Calculate gene signature summary scores
+
+Load libraries.
+
+```{r message=FALSE, warning=FALSE}
+  library(mvAC50)
+  library(tidyverse)
+```
+
+Prepare lists with names of metadata columns, data columns, etc, for the ```signature_scores``` function.
+
+```{r}
+# metadata columns in gene expression data.frames
+all_metadata <- c("cpd_id","cl_id","id","SM_Dose","CL_Center_Specific_ID","SM_Name","SM_Pert_Type",
+                  "SM_Time","det_plate","det_well","gene_signature","well_type")
+  
+# subset of metadata columns to keep in multivariate scores output
+keepvars <- c("cpd_id","SM_Dose","SM_Time","det_plate","gene_signature","well_type")
+
+# gene expression columns in the data
+readouts_egfr_sig <- setdiff(colnames(lincs_egfr_sig),all_metadata)
+readouts_tpx2_sig <- setdiff(colnames(lincs_tpx2_sig),all_metadata)
+
+```
+
+List of signature summary scores to calculate. The list below containts all available scoring methods, except maha_AC and maha_NC, as the mahalanobis distace calculation failed with a convergence error for this dataset. 
+
+```{r}
+mv_methods <- c("euc_AC","euc_NC","cor_p_AC","cor_s_AC","dot_p_AC","cos_AC","vec_norm","scalar_projection_AC","cos_weight_AC","num_readouts_changed")
+```
+
+
+Calculate signature scores using the ```signature_scores``` function. From each signature the 20 strongest responding individual genes are also kept for the calculation of single gene AC50s for comparison using the option ```keep_n_most_responsive_readouts=20```. For the calculation, the column well_type specifies samples "SA", and the two controls "AC" (active controls), and "NC" (neutral controls). The controls are used by some of the signature score methods. The grouping in the command below is done by plate to calculate signature scores for wells only based on controls of the same plate as the samples.
+
+
+```{r}
+
+lincs_egfr_sig_scores <- lincs_egfr_sig  %>% group_by(det_plate) %>% 
+  do(signature_scores(., readouts=readouts_egfr_sig, keep_cols=keepvars, well_type = "well_type",
+                      mv_methods=mv_methods, threshold=3, keep_n_most_responsive_readouts = 20))
+
+lincs_tpx2_sig_scores <- lincs_tpx2_sig  %>% group_by(det_plate) %>% 
+  do(signature_scores(., readouts=readouts_tpx2_sig, keep_cols=keepvars, well_type = "well_type",
+                      mv_methods=mv_methods, threshold=3, keep_n_most_responsive_readouts = 20))
+
+lincs_sig_scores <- rbind(lincs_egfr_sig_scores, lincs_tpx2_sig_scores)
+
+head(lincs_sig_scores)
+```
+
+
+### Fit EC50s from univariate and multivariate readouts
+
+Fit AC50s using the ```fit_AC50``` function. Only samples data is used for fitting (well_type == "SA"), as controls don't have dose dependent data. Readouts for fitting were normalized to the active control by the ```signature_scores``` function already (100% = signal of the active control), which is the appropriate input column for the AC50 fitting.
+
+For constant fits, no AC50 values are reported by the ```fit_AC50``` function. To facilitate the comparison to the univariate cAMP EC50s, AC50s of constant fits were set to one log unit below the lowest screening concentration for inactive compounds and one log unit above the highest screening concentration for compounds active at all tested concentrations. Similarly for inactive compounds with parametric or non-parametric fits with ainf < 50%, AC50s were also set to one log unit above the highest screening concentration.
+
+
+```{r, message=FALSE, warning=FALSE}
+
+lincs_ac50s <- lincs_sig_scores %>% filter(well_type=="SA") %>% group_by(cpd_id, SM_Time, readout_name, readout_type, readout_class, gene_signature) %>%
+  do(fit_AC50(., conc_um="SM_Dose", readout_value_pctAC="readout_value_pctAC",
+              constr_lower = c(-50, -50, log10(1e-06), 0.1), constr_upper = c( 500,  500,  3,  10)))
+
+
+# modify constant and inactive AC50s for better comparison
+lincs_ac50s <- lincs_ac50s %>% mutate(
+  # if constant fit set AC50 to either 1 log unit above or below max tested concentration
+  ac50=ifelse(fit_type=="constant" & amax > 50, 0.004, ifelse(fit_type=="constant" & amax <= 50, 100, ac50)),
+  # if ainf < 50% activity, also set AC50 to one log unit above highest tested dose
+  ac50=ifelse(fit_type %in% c("param","nonparam") & ainf < 50, 100, ac50)
+)
+
+```
+
+
+Join GR50 data for comparison of IC50s.
+
+```{r, message=FALSE, warning=FALSE}
+
+lincs_ac50s <- inner_join(lincs_ac50s, lincs_GR50s[,c("cpd_id","GR50.e")], 
+                                by=c("cpd_id"))
+```
+
+
+
+```{r, echo=FALSE}
+univariate_readouts <- sort(unique(lincs_ac50s[lincs_ac50s$readout_type=="univariate",]$readout_name))
+
+lincs_ac50s$readout_name <- factor(lincs_ac50s$readout_name, levels=c(
+  "cor_p_AC","cor_s_AC","cos_AC","cos_weight_AC","dot_p_AC","scalar_projection_AC","vec_norm",
+  "euc_NC","num_readouts_changed","euc_AC",univariate_readouts   
+))
+
+lincs_ac50s$readout_class <- factor(lincs_ac50s$readout_class, levels=c(
+  "direction","directionMagnitude","magnitude","AC_similarity","univariate"
+))
+
+
+```
+
+
+
+
+### Gene and gene signature IC50s compared to cell growth inhibition GR50s 
+
+```{r fig.height=12, fig.width=8.5, fig.cap='Figure 1. Comparison of gene signature IC50s with cell growth inhibition GR50s'}
+lincs_ac50s %>% filter(readout_type=="multivariate") %>% mutate(condition=paste0(gene_signature, "_",SM_Time, "h")) %>% 
+ggplot(aes(x=GR50.e, y=ac50, colour=readout_class)) +
+  theme_bw()+
+  geom_point(size=2, alpha=.8,stroke=1.5) +
+  scale_x_log10() + scale_y_log10() +
+  facet_grid(readout_name~condition) +
+  scale_color_manual(values=c("#FF9900", "chartreuse4","#3366CC","darkorchid1","darkgrey"))+
+  geom_abline(slope=1, color="red") +
+  geom_abline(slope=1, intercept=1, linetype="dashed",color="red") +
+  geom_abline(slope=1, intercept=-1, linetype="dashed",color="red") +
+  labs(x = "GR50 [uM]", y="gene signature IC50 [uM]")
+```
+
+
+
+
+
+```{r fig.height=10, fig.width=8.5, fig.cap='Figure 2. Comparison of individual gene IC50s with cell growth inhibition GR50s.'}
+lincs_ac50s %>% filter(readout_type=="univariate") %>% mutate(condition=paste0(gene_signature, "_",SM_Time, "h")) %>% 
+  ggplot(aes(x=GR50.e, y=ac50, shape=condition)) +
+  theme_bw()+
+  geom_point(size=2, alpha=.8,stroke=1.5, colour="darkgrey") +
+  scale_x_log10() + scale_y_log10() +
+  facet_wrap(~readout_name, ncol=7) +
+  scale_shape_manual(values=c(16,1,17,2,0,2,5))+
+  geom_abline(slope=1, color="red") +
+  geom_abline(slope=1, intercept=1, linetype="dashed",color="red") +
+  geom_abline(slope=1, intercept=-1, linetype="dashed",color="red") +
+  labs(x = "GR50 [uM]", y="gene IC50 [uM]")+
+  theme(axis.text.x  = element_text(angle=90, vjust=0.5, size=8)) 
+```
+
+
+
+### Quantify correlation of gene and gene signature IC50s with cell growth inhibition GR50s
+
+Calculate the correlations to GR50s.
+```{r message=FALSE, warning=FALSE}
+
+lincs_ac50s.cor <- lincs_ac50s %>% group_by(readout_name, readout_type, readout_class, SM_Time, gene_signature) %>%
+  summarize(
+    num.datapoints=n(),
+    rmse.ac50=mean((log10(ac50)-log10(GR50.e))^2,na.rm = TRUE),
+    cor.pearson.ac50=cor(log10(ac50), log10(GR50.e), use="pairwise.complete.obs"), 
+    cor.spearman.ac50=cor(log10(ac50), log10(GR50.e), method="spearman", use="complete.obs")
+  )
+
+```
+
+
+Plot
+
+```{r fig.cap='Figure 3. Correlation of cell growth inhibition GR50s with all gene and gene-signature EC50s', fig.height=5, fig.width=7, message=FALSE, warning=FALSE}
+
+lincs_ac50s.cor <- lincs_ac50s.cor %>% mutate(time=paste0(SM_Time,"h")) %>% #  
+  mutate(readout=ifelse(readout_type=="multivariate",as.character(readout_name), "single_gene")) %>%
+  mutate(readout=factor(readout, levels=c("cor_p_AC","cor_s_AC","cos_AC","cos_weight_AC","dot_p_AC","scalar_projection_AC","vec_norm","euc_NC","num_readouts_changed","euc_AC","single_gene")))  
+
+ggplot(lincs_ac50s.cor %>% filter(readout_type=="multivariate"), aes(y=cor.pearson.ac50, x=readout, colour=readout_class)) +
+  theme_bw()+
+  coord_cartesian(ylim=c(-0.7,1))+
+  geom_hline(yintercept=c(-.5,.5,1), linetype="dashed", colour="grey", size=.5) +
+  geom_hline(yintercept=c(0), colour="grey", size=.5) +
+  geom_point(size=2, alpha=.9, stroke=1.5, shape=16) +
+  geom_jitter(data=lincs_ac50s.cor %>% filter(readout_type=="univariate"), size=2, alpha=.8, stroke=1.5, width=.45, shape=16)+
+  geom_boxplot(data=lincs_ac50s.cor %>% filter(readout_type=="univariate"), color="black", outlier.shape=NA, alpha=0)+
+  # theme(text = element_text(size=16 )) +
+  scale_x_discrete(name="", limits = rev(levels(lincs_ac50s.cor$readout))) + # reverse order of axis
+  scale_color_manual(values=c("darkorchid1","#FF9900", "chartreuse4","#3366CC","darkgrey"))+
+  facet_grid(time~gene_signature)+
+  coord_flip()+
+  labs(y = "correlation IC50s to GR50s", shape="EGFR inh", color="Method class")
+```
+
+
+
