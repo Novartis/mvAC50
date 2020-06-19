@@ -5,7 +5,7 @@ mvAC50 is an R package for the calculation of AC50s (general term for IC50s or E
 
 ## Reference
 
-Renner *et Al.*, **Gene-signatures predict biologically relevant dose-response potencies in phenotypic assays**, submitted
-
-
+Renner *et al.*, **Gene-signature-derived IC50s/EC50s reflect the potency of causative upstream targets and downstream phenotypes**
+Sci Rep. 2020 Jun 15;10(1):9670. doi: 10.1038/s41598-020-66533-5
+https://www.nature.com/articles/s41598-020-66533-5
 
